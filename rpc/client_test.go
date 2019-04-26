@@ -5,9 +5,9 @@
 package rpc
 
 import (
-	"testing"
-
+	"encoding/hex"
 	"fmt"
+	"testing"
 
 	"github.com/33cn/chain33/account"
 	"github.com/33cn/chain33/client/mocks"
@@ -67,6 +67,12 @@ func testCreateRawTransactionTo(t *testing.T) {
 
 	client := newTestChannelClient()
 	rawtx, err := client.CreateRawTransaction(&tx)
+	assert.NoError(t, err)
+
+	reqDecode := &types.ReqDecodeRawTransaction{TxHex: hex.EncodeToString(rawtx)}
+	_, err = client.DecodeRawTransaction(reqDecode)
+	assert.NoError(t, err)
+
 	assert.Nil(t, err)
 	var mytx types.Transaction
 	err = types.Decode(rawtx, &mytx)
@@ -164,54 +170,6 @@ func TestChannelClient_CreateRawTransaction(t *testing.T) {
 	testCreateRawTransactionCoinTransfer(t)
 	testCreateRawTransactionCoinTransferExec(t)
 	testCreateRawTransactionCoinWithdraw(t)
-}
-
-func testSendRawTransactionNil(t *testing.T) {
-	client := newTestChannelClient()
-	_, err := client.SendRawTransaction(nil)
-	assert.Equal(t, types.ErrInvalidParam, err)
-}
-
-func testSendRawTransactionErr(t *testing.T) {
-	var param = types.SignedTx{
-		Unsign: []byte("123"),
-		Sign:   []byte("123"),
-		Pubkey: []byte("123"),
-		Ty:     1,
-	}
-
-	client := newTestChannelClient()
-	_, err := client.SendRawTransaction(&param)
-	assert.NotEmpty(t, err)
-}
-
-func testSendRawTransactionOk(t *testing.T) {
-	transfer := &types.Transaction{
-		Execer: []byte(types.ExecName("ticket")),
-	}
-	payload := types.Encode(transfer)
-
-	api := new(mocks.QueueProtocolAPI)
-	client := &channelClient{
-		QueueProtocolAPI: api,
-	}
-	api.On("SendTx", mock.Anything).Return(nil, nil)
-
-	var param = types.SignedTx{
-		Unsign: payload,
-		Sign:   []byte("123"),
-		Pubkey: []byte("123"),
-		Ty:     1,
-	}
-
-	_, err := client.SendRawTransaction(&param)
-	assert.Nil(t, err)
-}
-
-func TestChannelClient_SendRawTransaction(t *testing.T) {
-	testSendRawTransactionNil(t)
-	testSendRawTransactionOk(t)
-	testSendRawTransactionErr(t)
 }
 
 func testChannelClientGetAddrOverviewNil(t *testing.T) {
@@ -343,21 +301,30 @@ func TestChannelClient_GetBalance(t *testing.T) {
 	testChannelClient_GetBalanceOther(t)
 }
 
-// func TestChannelClient_GetTotalCoins(t *testing.T) {
-// 	client := newTestChannelClient()
-// 	data, err := client.GetTotalCoins(nil)
-// 	assert.NotNil(t, err)
-// 	assert.Nil(t, data)
-//
-// 	// accountdb =
-// 	token := &types.ReqGetTotalCoins{
-// 		Symbol:    "CNY",
-// 		StateHash: []byte("1234"),
-// 		StartKey:  []byte("sad"),
-// 		Count:     1,
-// 		Execer:    "coin",
-// 	}
-// 	data, err = client.GetTotalCoins(token)
-// 	assert.NotNil(t, data)
-// 	assert.Nil(t, err)
-// }
+func TestChannelClient_GetTotalCoins(t *testing.T) {
+	client := new(channelClient)
+	api := new(mocks.QueueProtocolAPI)
+	client.Init(&qmock.Client{}, api)
+	api.On("StoreGetTotalCoins", mock.Anything).Return(&types.ReplyGetTotalCoins{}, nil)
+	_, err := client.GetTotalCoins(&types.ReqGetTotalCoins{})
+	assert.NoError(t, err)
+
+	// accountdb =
+	//token := &types.ReqGetTotalCoins{
+	//	Symbol:    "CNY",
+	//	StateHash: []byte("1234"),
+	//	StartKey:  []byte("sad"),
+	//	Count:     1,
+	//	Execer:    "coin",
+	//}
+	//data, err = client.GetTotalCoins(token)
+	//assert.NotNil(t, data)
+	//assert.Nil(t, err)
+}
+
+func TestChannelClient_CreateNoBalanceTransaction(t *testing.T) {
+	client := new(channelClient)
+	in := &types.NoBalanceTx{}
+	_, err := client.CreateNoBalanceTransaction(in)
+	assert.NoError(t, err)
+}

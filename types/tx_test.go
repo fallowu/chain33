@@ -34,7 +34,7 @@ func TestCreateGroupTx(t *testing.T) {
 		t.Error(err)
 		return
 	}
-	err = group.Check(0, GInt("MinFee"))
+	err = group.Check(0, GInt("MinFee"), GInt("MaxFee"))
 	if err != nil {
 		for i := 0; i < len(group.Txs); i++ {
 			t.Log(group.Txs[i].JSON())
@@ -45,6 +45,66 @@ func TestCreateGroupTx(t *testing.T) {
 	newtx := group.Tx()
 	grouptx := hex.EncodeToString(Encode(newtx))
 	t.Log(grouptx)
+}
+
+func TestCreateParaGroupTx(t *testing.T) {
+	tempTitle := GetTitle()
+	SetTitleOnlyForTest("chain33")
+	testHeight := int64(1687250 + 1)
+	tx1 := "0a05636f696e73120e18010a0a1080c2d72f1a036f746520a08d0630f1cdebc8f7efa5e9283a22313271796f6361794e46374c7636433971573461767873324537553431664b536676"
+	tx2 := "0a05636f696e73120e18010a0a1080c2d72f1a036f746520a08d0630de92c3828ad194b26d3a22313271796f6361794e46374c7636433971573461767873324537553431664b536676"
+	tx3 := "0a05636f696e73120e18010a0a1080c2d72f1a036f746520a08d0630b0d6c895c4d28efe5d3a22313271796f6361794e46374c7636433971573461767873324537553431664b536676"
+	tx11, _ := hex.DecodeString(tx1)
+	tx21, _ := hex.DecodeString(tx2)
+	tx31, _ := hex.DecodeString(tx3)
+	var tx12 Transaction
+	Decode(tx11, &tx12)
+	var tx22 Transaction
+	Decode(tx21, &tx22)
+	var tx32 Transaction
+	Decode(tx31, &tx32)
+
+	tx12.Execer = []byte("user.p.test.token")
+	tx22.Execer = []byte("token")
+	tx32.Execer = []byte("user.p.test.ticket")
+
+	//SetFork("", "ForkTxGroupPara", 0)
+	group, err := CreateTxGroup([]*Transaction{&tx12, &tx22, &tx32})
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	err = group.Check(testHeight, GInt("MinFee"), GInt("MaxFee"))
+	if err != nil {
+		for i := 0; i < len(group.Txs); i++ {
+			t.Log(group.Txs[i].JSON())
+		}
+		//t.Error(err)
+
+	}
+	assert.Equal(t, ErrTxGroupParaMainMixed, err)
+
+	tx22.Execer = []byte("user.p.para.token")
+	group, err = CreateTxGroup([]*Transaction{&tx12, &tx22, &tx32})
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	err = group.Check(testHeight, GInt("MinFee"), GInt("MaxFee"))
+	assert.Equal(t, ErrTxGroupParaCount, err)
+
+	tx22.Execer = []byte("user.p.test.paracross")
+	group, err = CreateTxGroup([]*Transaction{&tx12, &tx22, &tx32})
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	err = group.Check(testHeight, GInt("MinFee"), GInt("MaxFee"))
+	assert.Nil(t, err)
+	newtx := group.Tx()
+	grouptx := hex.EncodeToString(Encode(newtx))
+	t.Log(grouptx)
+	SetTitleOnlyForTest(tempTitle)
 }
 
 func TestCreateGroupTxWithSize(t *testing.T) {
@@ -80,7 +140,7 @@ func TestCreateGroupTxWithSize(t *testing.T) {
 		return
 	}
 
-	err = group.Check(0, GInt("MinFee"))
+	err = group.Check(0, GInt("MinFee"), GInt("MaxFee"))
 	if err != nil {
 		for i := 0; i < len(group.Txs); i++ {
 			t.Log(group.Txs[i].JSON())
@@ -163,7 +223,7 @@ func TestSignGroupTx(t *testing.T) {
 			return
 		}
 	}
-	err = group.Check(0, GInt("MinFee"))
+	err = group.Check(0, GInt("MinFee"), GInt("MaxFee"))
 	if err != nil {
 		t.Error(err)
 		return

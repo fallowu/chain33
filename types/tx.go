@@ -149,7 +149,7 @@ func (txgroup *Transactions) IsExpire(height, blocktime int64) bool {
 }
 
 //Check height == 0 的时候，不做检查
-func (txgroup *Transactions) Check(height int64, minfee int64) error {
+func (txgroup *Transactions) Check(height, minfee, maxFee int64) error {
 	txs := txgroup.Txs
 	if len(txs) < 2 {
 		return ErrTxGroupCountLessThanTwo
@@ -159,22 +159,31 @@ func (txgroup *Transactions) Check(height int64, minfee int64) error {
 		if txs[i] == nil {
 			return ErrTxGroupEmpty
 		}
-		err := txs[i].check(0)
+		err := txs[i].check(height, 0, maxFee)
 		if err != nil {
 			return err
 		}
-		name := string(txs[i].Execer)
-		if IsParaExecName(name) {
-			para[name] = true
+		if title, ok := GetParaExecTitleName(string(txs[i].Execer)); ok {
+			para[title] = true
 		}
 	}
-	//txgroup 只允许一条平行链的交易
-	if IsEnableFork(height, "ForkV24TxGroupPara", EnableTxGroupParaFork) {
+	//txgroup 只允许一条平行链的交易, 且平行链txgroup须全部是平行链tx
+	//如果平行链已经在主链分叉高度前运行了一段时间且有跨链交易，平行链需要自己设置这个fork
+	if IsFork(height, "ForkTxGroupPara") {
 		if len(para) > 1 {
 			tlog.Info("txgroup has multi para transaction")
 			return ErrTxGroupParaCount
 		}
+		if len(para) > 0 {
+			for _, tx := range txs {
+				if !IsParaExecName(string(tx.Execer)) {
+					tlog.Error("para txgroup has main chain transaction")
+					return ErrTxGroupParaMainMixed
+				}
+			}
+		}
 	}
+
 	for i := 1; i < len(txs); i++ {
 		if txs[i].Fee != 0 {
 			return ErrTxGroupFeeNotZero
@@ -191,6 +200,9 @@ func (txgroup *Transactions) Check(height int64, minfee int64) error {
 	}
 	if txs[0].Fee < totalfee {
 		return ErrTxFeeTooLow
+	}
+	if txs[0].Fee > maxFee && maxFee > 0 && IsFork(height, "ForkBlockCheck") {
+		return ErrTxFeeTooHigh
 	}
 	//检查hash是否符合要求
 	for i := 0; i < len(txs); i++ {
@@ -288,7 +300,7 @@ func (tx *TransactionCache) Tx() *Transaction {
 }
 
 //Check 交易缓存中交易组合费用的检测
-func (tx *TransactionCache) Check(height, minfee int64) error {
+func (tx *TransactionCache) Check(height, minfee, maxFee int64) error {
 	if !tx.checked {
 		tx.checked = true
 		txs, err := tx.GetTxGroup()
@@ -297,9 +309,9 @@ func (tx *TransactionCache) Check(height, minfee int64) error {
 			return err
 		}
 		if txs == nil {
-			tx.checkok = tx.check(minfee)
+			tx.checkok = tx.check(height, minfee, maxFee)
 		} else {
-			tx.checkok = txs.Check(height, minfee)
+			tx.checkok = txs.Check(height, minfee, maxFee)
 		}
 	}
 	return tx.checkok
@@ -449,18 +461,18 @@ func (tx *Transaction) checkSign() bool {
 }
 
 //Check 交易检测
-func (tx *Transaction) Check(height, minfee int64) error {
+func (tx *Transaction) Check(height, minfee, maxFee int64) error {
 	group, err := tx.GetTxGroup()
 	if err != nil {
 		return err
 	}
 	if group == nil {
-		return tx.check(minfee)
+		return tx.check(height, minfee, maxFee)
 	}
-	return group.Check(height, minfee)
+	return group.Check(height, minfee, maxFee)
 }
 
-func (tx *Transaction) check(minfee int64) error {
+func (tx *Transaction) check(height, minfee, maxFee int64) error {
 	txSize := Size(tx)
 	if txSize > int(MaxTxSize) {
 		return ErrTxMsgSizeTooBig
@@ -472,6 +484,9 @@ func (tx *Transaction) check(minfee int64) error {
 	realFee := int64(txSize/1000+1) * minfee
 	if tx.Fee < realFee {
 		return ErrTxFeeTooLow
+	}
+	if tx.Fee > maxFee && maxFee > 0 && IsFork(height, "ForkBlockCheck") {
+		return ErrTxFeeTooHigh
 	}
 	return nil
 }
@@ -532,6 +547,15 @@ func (tx *Transaction) IsExpire(height, blocktime int64) bool {
 		return tx.isExpire(height, blocktime)
 	}
 	return group.IsExpire(height, blocktime)
+}
+
+//GetTxFee 获取交易的费用，区分单笔交易和交易组
+func (tx *Transaction) GetTxFee() int64 {
+	group, _ := tx.GetTxGroup()
+	if group == nil {
+		return tx.Fee
+	}
+	return group.Txs[0].Fee
 }
 
 //From 交易from地址
