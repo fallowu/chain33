@@ -87,24 +87,6 @@ func VerifySeed(seed string) (bool, error) {
 	return true, nil
 }
 
-// SaveSeed 使用password加密seed存储到db中
-func SaveSeed(db dbm.DB, seed string, password string) (bool, error) {
-	if len(seed) == 0 || len(password) == 0 {
-		return false, types.ErrInvalidParam
-	}
-
-	Encrypted, err := AesgcmEncrypter([]byte(password), []byte(seed))
-	if err != nil {
-		seedlog.Error("SaveSeed", "AesgcmEncrypter err", err)
-		return false, err
-	}
-	err = db.SetSync(WalletSeed, Encrypted)
-	if err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
 // SaveSeedInBatch 保存种子数据到数据库
 func SaveSeedInBatch(db dbm.DB, seed string, password string, batch dbm.Batch) (bool, error) {
 	if len(seed) == 0 || len(password) == 0 {
@@ -142,26 +124,31 @@ func GetSeed(db dbm.DB, password string) (string, error) {
 }
 
 //GetPrivkeyBySeed 通过seed生成子私钥十六进制字符串
-func GetPrivkeyBySeed(db dbm.DB, seed string) (string, error) {
+func GetPrivkeyBySeed(db dbm.DB, seed string, specificIndex uint32, signType int) (string, error) {
 	var backupindex uint32
 	var Hexsubprivkey string
 	var err error
 	var index uint32
+
 	//通过主私钥随机生成child私钥十六进制字符串
-	backuppubkeyindex, err := db.Get([]byte(BACKUPKEYINDEX))
-	if backuppubkeyindex == nil || err != nil {
-		index = 0
-	} else {
-		if err = json.Unmarshal(backuppubkeyindex, &backupindex); err != nil {
-			return "", err
+	if specificIndex == 0 {
+		backuppubkeyindex, err := db.Get([]byte(BACKUPKEYINDEX))
+		if backuppubkeyindex == nil || err != nil {
+			index = 0
+		} else {
+			if err = json.Unmarshal(backuppubkeyindex, &backupindex); err != nil {
+				return "", err
+			}
+			index = backupindex + 1
 		}
-		index = backupindex + 1
+	} else {
+		index = specificIndex
 	}
-	if SignType != 1 && SignType != 2 {
+	if signType != 1 && signType != 2 {
 		return "", types.ErrNotSupport
 	}
 	//secp256k1
-	if SignType == 1 {
+	if signType == 1 {
 
 		wallet, err := bipwallet.NewWalletFromMnemonic(bipwallet.TypeBty, seed)
 		if err != nil {
@@ -192,7 +179,7 @@ func GetPrivkeyBySeed(db dbm.DB, seed string) (string, error) {
 			return "", types.ErrSubPubKeyVerifyFail
 		}
 
-	} else if SignType == 2 { //ed25519
+	} else if signType == 2 { //ed25519
 
 		//通过助记词形式的seed生成私钥和公钥,一个seed根据不同的index可以生成许多组密钥
 		//字符串形式的助记词(英语单词)通过计算一次hash转成字节形式的seed
@@ -209,17 +196,19 @@ func GetPrivkeyBySeed(db dbm.DB, seed string) (string, error) {
 		Hexsubprivkey = secretKey
 	}
 	// back up index in db
-	var pubkeyindex []byte
-	pubkeyindex, err = json.Marshal(index)
-	if err != nil {
-		seedlog.Error("GetPrivkeyBySeed", "Marshal err ", err)
-		return "", types.ErrMarshal
-	}
+	if specificIndex == 0 {
+		var pubkeyindex []byte
+		pubkeyindex, err = json.Marshal(index)
+		if err != nil {
+			seedlog.Error("GetPrivkeyBySeed", "Marshal err ", err)
+			return "", types.ErrMarshal
+		}
 
-	err = db.SetSync([]byte(BACKUPKEYINDEX), pubkeyindex)
-	if err != nil {
-		seedlog.Error("GetPrivkeyBySeed", "SetSync err ", err)
-		return "", err
+		err = db.SetSync([]byte(BACKUPKEYINDEX), pubkeyindex)
+		if err != nil {
+			seedlog.Error("GetPrivkeyBySeed", "SetSync err ", err)
+			return "", err
+		}
 	}
 	return Hexsubprivkey, nil
 }

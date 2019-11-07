@@ -129,12 +129,8 @@ func (m *mockBlockChain) SetQueueClient(q queue.Queue) {
 					msg.ReplyErr("Do not support", types.ErrInvalidParam)
 				}
 			case types.EventLocalList:
-				if req, ok := msg.GetData().(*types.LocalDBList); ok {
-					if len(req.Key) > 0 && bytes.Equal(req.Key, []byte("Statistics:TicketInfoOrder:Addr:case1")) {
-						msg.Reply(client.NewMessage(blockchainKey, types.EventReplyQuery, &types.TicketMinerInfo{}))
-					} else {
-						msg.Reply(client.NewMessage(blockchainKey, types.EventReplyQuery, &types.LocalReplyValue{}))
-					}
+				if _, ok := msg.GetData().(*types.LocalDBList); ok {
+					msg.Reply(client.NewMessage(blockchainKey, types.EventReplyQuery, &types.LocalReplyValue{}))
 				} else {
 					msg.ReplyErr("Do not support", types.ErrInvalidParam)
 				}
@@ -166,6 +162,40 @@ func (m *mockBlockChain) SetQueueClient(q queue.Queue) {
 				} else {
 					msg.ReplyErr("transaction id must 9999", types.ErrInvalidParam)
 				}
+			case types.EventGetMainSeqByHash:
+				if req, ok := msg.GetData().(*types.ReqHash); ok && string(req.Hash) == "exist-hash" {
+					msg.Reply(client.NewMessage(blockchainKey, types.EventReplyMainSeqByHash, &types.Int64{Data: 9999}))
+				} else {
+					msg.ReplyErr("transaction hash is not exist-hash", types.ErrInvalidParam)
+				}
+			case types.EventGetLastBlockMainSequence:
+				if _, ok := msg.GetData().(*types.ReqNil); ok {
+					msg.Reply(client.NewMessage(blockchainKey, types.EventReplyLastBlockMainSequence, &types.Int64{Data: 9999}))
+				} else {
+					msg.ReplyErr("request must be nil", types.ErrInvalidParam)
+				}
+
+			case types.EventGetParaTxByTitle:
+				if req, ok := msg.GetData().(*types.ReqParaTxByTitle); ok {
+					// just for cover
+					if req.Title == "user" {
+						msg.Reply(client.NewMessage(blockchainKey, types.EventReplyParaTxByTitle, &types.Reply{IsOk: false, Msg: []byte("not support")}))
+					} else {
+						msg.Reply(client.NewMessage(blockchainKey, types.EventReplyParaTxByTitle, &types.ParaTxDetails{}))
+					}
+				}
+			case types.EventGetLastBlockSequence:
+				msg.Reply(client.NewMessage(blockchainKey, types.EventReplyLastBlockSequence, &types.Int64{}))
+			case types.EventGetBlockByHashes:
+				msg.Reply(client.NewMessage(blockchainKey, types.EventReplyLastBlockSequence, &types.BlockDetails{}))
+			case types.EventGetBlockSequences:
+				msg.Reply(client.NewMessage(blockchainKey, types.EventReplyBlockSequences, &types.BlockSequences{}))
+			case types.EventAddBlockSeqCB:
+				msg.Reply(client.NewMessage(blockchainKey, types.EventReplyQuery, &types.Reply{}))
+			case types.EventListBlockSeqCB:
+				msg.Reply(client.NewMessage(blockchainKey, types.EventReplyQuery, &types.BlockSeqCBs{}))
+			case types.EventGetSeqCBLastNum:
+				msg.Reply(client.NewMessage(blockchainKey, types.EventReplyQuery, &types.Int64{}))
 			default:
 				msg.ReplyErr("Do not support", types.ErrNotSupport)
 			}

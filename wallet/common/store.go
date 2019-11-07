@@ -22,6 +22,13 @@ var (
 	storelog = log15.New("wallet", "store")
 )
 
+//AddrInfo 通过seed指定index创建的账户信息，目前主要用于空投地址
+type AddrInfo struct {
+	Index  uint32 `json:"index,omitempty"`
+	Addr   string `json:"addr,omitempty"`
+	Pubkey string `json:"pubkey,omitempty"`
+}
+
 // NewStore 新建存储对象
 func NewStore(db db.DB) *Store {
 	return &Store{db: db}
@@ -195,10 +202,16 @@ func (store *Store) GetTxDetailByIter(TxList *types.ReqWalletTransactionList) (*
 	}
 
 	var txbytes [][]byte
-	//FromTx是空字符串时。默认从最新的交易开始取count个
+	//FromTx是空字符串时，
+	//Direction == 0从最新的交易开始倒序取count个
+	//Direction == 1从最早的交易开始正序取count个
 	if len(TxList.FromTx) == 0 {
 		list := store.NewListHelper()
-		txbytes = list.IteratorScanFromLast(CalcTxKey(""), TxList.Count)
+		if TxList.Direction == 0 {
+			txbytes = list.IteratorScanFromLast(CalcTxKey(""), TxList.Count)
+		} else {
+			txbytes = list.IteratorScanFromFirst(CalcTxKey(""), TxList.Count)
+		}
 		if len(txbytes) == 0 {
 			storelog.Error("GetTxDetailByIter IteratorScanFromLast does not exist tx!")
 			return nil, types.ErrTxNotExist
@@ -220,12 +233,7 @@ func (store *Store) GetTxDetailByIter(TxList *types.ReqWalletTransactionList) (*
 			storelog.Error("GetTxDetailByIter", "proto.Unmarshal err:", err)
 			return nil, types.ErrUnmarshal
 		}
-		if string(txdetail.Tx.GetExecer()) == "coins" && txdetail.Tx.ActionName() == "withdraw" {
-			//swap from and to
-			txdetail.Fromaddr, txdetail.Tx.To = txdetail.Tx.To, txdetail.Fromaddr
-		}
-		txhash := txdetail.GetTx().Hash()
-		txdetail.Txhash = txhash
+		txdetail.Txhash = txdetail.GetTx().Hash()
 		txDetails.TxDetails[index] = &txdetail
 	}
 	return &txDetails, nil
@@ -342,4 +350,35 @@ func (store *Store) HasSeed() (bool, error) {
 		return false, types.ErrSeedExist
 	}
 	return true, nil
+}
+
+// GetAirDropIndex 获取指定index的空投地址
+func (store *Store) GetAirDropIndex() (string, error) {
+	var airDrop AddrInfo
+	data, err := store.Get(CalcAirDropIndex())
+	if data == nil || err != nil {
+		if err != db.ErrNotFoundInDb {
+			storelog.Debug("GetAirDropIndex", "err", err)
+		}
+		return "", types.ErrAddrNotExist
+	}
+	err = json.Unmarshal(data, &airDrop)
+	if err != nil {
+		storelog.Error("GetWalletVersion unmarshal", "err", err)
+		return "", err
+	}
+	storelog.Debug("GetAirDropIndex ", "airDrop", airDrop)
+	return airDrop.Addr, nil
+}
+
+// SetAirDropIndex 存储指定index的空投地址信息
+func (store *Store) SetAirDropIndex(airDropIndex *AddrInfo) error {
+	data, err := json.Marshal(airDropIndex)
+	if err != nil {
+		storelog.Error("SetAirDropIndex marshal", "err", err)
+		return err
+	}
+
+	storelog.Debug("SetAirDropIndex ", "airDropIndex", airDropIndex)
+	return store.GetDB().SetSync(CalcAirDropIndex(), data)
 }

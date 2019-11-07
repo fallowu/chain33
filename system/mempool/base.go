@@ -59,7 +59,7 @@ func NewMempool(cfg *types.Mempool) *Mempool {
 	pool.cfg = cfg
 	pool.poolHeader = make(chan struct{}, 2)
 	pool.removeBlockTicket = time.NewTicker(time.Minute)
-	pool.cache = newCache(cfg.MaxTxNumPerAccount, cfg.MaxTxLast)
+	pool.cache = newCache(cfg.MaxTxNumPerAccount, cfg.MaxTxLast, cfg.PoolCacheSize)
 	return pool
 }
 
@@ -122,19 +122,21 @@ func (mem *Mempool) getTxList(filterList *types.TxHashList) (txs []*types.Transa
 	for i := 0; i < len(filterList.GetHashes()); i++ {
 		dupMap[string(filterList.GetHashes()[i])] = true
 	}
-	return mem.filterTxList(count, dupMap)
+	return mem.filterTxList(count, dupMap, false)
 }
 
-func (mem *Mempool) filterTxList(count int64, dupMap map[string]bool) (txs []*types.Transaction) {
+func (mem *Mempool) filterTxList(count int64, dupMap map[string]bool, isAll bool) (txs []*types.Transaction) {
 	height := mem.header.GetHeight()
 	blocktime := mem.header.GetBlockTime()
+	types.AssertConfig(mem.client)
+	cfg := mem.client.GetConfig()
 	mem.cache.Walk(int(count), func(tx *Item) bool {
 		if dupMap != nil {
 			if _, ok := dupMap[string(tx.Value.Hash())]; ok {
 				return true
 			}
 		}
-		if isExpired(tx, height, blocktime) {
+		if isExpired(cfg, tx, height, blocktime) && !isAll {
 			return true
 		}
 		txs = append(txs, tx.Value)
@@ -218,6 +220,13 @@ func (mem *Mempool) GetLatestTx() []*types.Transaction {
 	return mem.cache.GetLatestTx()
 }
 
+//  GetTotalCacheBytes 获取缓存交易的总占用空间
+func (mem *Mempool) GetTotalCacheBytes() int64 {
+	mem.proxyMtx.Lock()
+	defer mem.proxyMtx.Unlock()
+	return mem.cache.TotalByte()
+}
+
 // pollLastHeader在初始化后循环获取LastHeader，直到获取成功后，返回
 func (mem *Mempool) pollLastHeader() {
 	defer mem.wg.Done()
@@ -244,7 +253,8 @@ func (mem *Mempool) pollLastHeader() {
 func (mem *Mempool) removeExpired() {
 	mem.proxyMtx.Lock()
 	defer mem.proxyMtx.Unlock()
-	mem.cache.removeExpiredTx(mem.header.GetHeight(), mem.header.GetBlockTime())
+	types.AssertConfig(mem.client)
+	mem.cache.removeExpiredTx(mem.client.GetConfig(), mem.header.GetHeight(), mem.header.GetBlockTime())
 }
 
 // removeBlockedTxs 每隔1分钟清理一次已打包的交易
@@ -281,6 +291,53 @@ func (mem *Mempool) RemoveTxsOfBlock(block *types.Block) bool {
 	return true
 }
 
+// GetProperFeeRate 获取合适的手续费率
+func (mem *Mempool) GetProperFeeRate(req *types.ReqProperFee) int64 {
+	if req == nil || req.TxCount == 0 {
+		req = &types.ReqProperFee{TxCount: 20}
+	}
+	if req.TxSize == 0 {
+		req.TxSize = 10240
+	}
+	feeRate := mem.cache.GetProperFee()
+	if mem.cfg.IsLevelFee {
+		levelFeeRate := mem.getLevelFeeRate(mem.cfg.MinTxFee, req.TxCount, req.TxSize)
+		if levelFeeRate > feeRate {
+			feeRate = levelFeeRate
+		}
+	}
+	//控制精度
+	types.AssertConfig(mem.client)
+	cfg := mem.client.GetConfig()
+	minFee := cfg.GInt("MinFee")
+	if minFee != 0 && feeRate%minFee > 0 {
+		feeRate = (feeRate/minFee + 1) * minFee
+	}
+	return feeRate
+}
+
+// getLevelFeeRate 获取合适的阶梯手续费率, 可以外部传入count, size进行前瞻性估计
+func (mem *Mempool) getLevelFeeRate(baseFeeRate int64, appendCount, appendSize int32) int64 {
+	var feeRate int64
+	sumByte := mem.GetTotalCacheBytes() + int64(appendSize)
+	types.AssertConfig(mem.client)
+	cfg := mem.client.GetConfig()
+	maxTxNumber := cfg.GetP(mem.Height()).MaxTxNumber
+	memSize := mem.Size()
+	switch {
+	case sumByte >= int64(types.MaxBlockSize/20) || int64(memSize+int(appendCount)) >= maxTxNumber/2:
+		feeRate = 100 * baseFeeRate
+	case sumByte >= int64(types.MaxBlockSize/100) || int64(memSize+int(appendCount)) >= maxTxNumber/10:
+		feeRate = 10 * baseFeeRate
+	default:
+		feeRate = baseFeeRate
+	}
+	if feeRate > 10000000 {
+		feeRate = 10000000
+	}
+	return feeRate
+}
+
 // Mempool.DelBlock将回退的区块内的交易重新加入mempool中
 func (mem *Mempool) delBlock(block *types.Block) {
 	if len(block.Txs) <= 0 {
@@ -288,6 +345,8 @@ func (mem *Mempool) delBlock(block *types.Block) {
 	}
 	blkTxs := block.Txs
 	header := mem.GetHeader()
+	types.AssertConfig(mem.client)
+	cfg := mem.client.GetConfig()
 	for i := 0; i < len(blkTxs); i++ {
 		tx := blkTxs[i]
 		//当前包括ticket和平行链的第一笔挖矿交易，统一actionName为miner
@@ -300,7 +359,7 @@ func (mem *Mempool) delBlock(block *types.Block) {
 			tx = group.Tx()
 			i = i + groupCount - 1
 		}
-		err := tx.Check(header.GetHeight(), mem.cfg.MinTxFee, mem.cfg.MaxTxFee)
+		err := tx.Check(cfg, header.GetHeight(), mem.cfg.MinTxFee, mem.cfg.MaxTxFee)
 		if err != nil {
 			continue
 		}
@@ -389,4 +448,27 @@ func (mem *Mempool) setSync(status bool) {
 	mem.proxyMtx.Lock()
 	mem.sync = status
 	mem.proxyMtx.Unlock()
+}
+
+// getTxListByHash 从qcache或者SHashTxCache中获取hash对应的tx交易列表
+func (mem *Mempool) getTxListByHash(hashList *types.ReqTxHashList) *types.ReplyTxList {
+	mem.proxyMtx.Lock()
+	defer mem.proxyMtx.Unlock()
+
+	var replyTxList types.ReplyTxList
+
+	//通过短hash来获取tx交易
+	if hashList.GetIsShortHash() {
+		for _, sHash := range hashList.GetHashes() {
+			tx := mem.cache.GetSHashTxCache(sHash)
+			replyTxList.Txs = append(replyTxList.Txs, tx)
+		}
+		return &replyTxList
+	}
+	//通过hash来获取tx交易
+	for _, hash := range hashList.GetHashes() {
+		tx := mem.cache.getTxByHash(hash)
+		replyTxList.Txs = append(replyTxList.Txs, tx)
+	}
+	return &replyTxList
 }

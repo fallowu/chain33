@@ -11,6 +11,11 @@ import (
 	"github.com/33cn/chain33/types"
 )
 
+const (
+	pushMaxSeq  = 100
+	pushMaxSize = 100 * 1024 * 1024
+)
+
 //pushNotify push Notify
 type pushNotify struct {
 	cb  chan *types.BlockSeqCB
@@ -94,10 +99,10 @@ func (p *pushseq) updateSeq(seq int64) {
 }
 
 func (p *pushseq) trigeRun(run chan struct{}, sleep time.Duration) {
+	if sleep > 0 {
+		time.Sleep(sleep)
+	}
 	go func() {
-		if sleep > 0 {
-			time.Sleep(sleep)
-		}
 		select {
 		case run <- struct{}{}:
 		default:
@@ -132,13 +137,17 @@ func (p *pushseq) runTask(input pushNotify) {
 					p.trigeRun(run, 100*time.Millisecond)
 					continue
 				}
-				data, err := p.getDataBySeq(lastseq + 1)
+				seqCount := pushMaxSeq
+				if lastseq+int64(seqCount) > maxseq {
+					seqCount = 1
+				}
+				data, updateSeq, err := p.getSeqs(cb, lastseq+1, seqCount, pushMaxSize)
 				if err != nil {
-					chainlog.Error("getDataBySeq", "err", err)
+					chainlog.Error("getDataBySeq", "err", err, "seq", lastseq+1, "maxSeq", seqCount)
 					p.trigeRun(run, 1000*time.Millisecond)
 					continue
 				}
-				err = p.postData(cb, data)
+				err = p.postData(cb, data, updateSeq)
 				if err != nil {
 					chainlog.Error("postdata", "err", err)
 					//sleep 60s
@@ -146,25 +155,15 @@ func (p *pushseq) runTask(input pushNotify) {
 					continue
 				}
 				//update seqid
-				lastseq = lastseq + 1
+				lastseq = lastseq + int64(seqCount)
 				p.trigeRun(run, 0)
 			}
 		}
 	}(input)
 }
 
-func (p *pushseq) postData(cb *types.BlockSeqCB, data *types.BlockSeq) (err error) {
-	var postdata []byte
-
-	if cb.Encode == "json" {
-		postdata, err = types.PBToJSON(data)
-		if err != nil {
-			return err
-		}
-	} else {
-		postdata = types.Encode(data)
-	}
-
+//seq= data.Seqs[0].Num+int64(len(data.Seqs))-1
+func (p *pushseq) postData(cb *types.BlockSeqCB, postdata []byte, seq int64) (err error) {
 	//post data in body
 	var buf bytes.Buffer
 	g := gzip.NewWriter(&buf)
@@ -195,18 +194,97 @@ func (p *pushseq) postData(cb *types.BlockSeqCB, data *types.BlockSeq) (err erro
 		chainlog.Error("postData fail", "cb.name", cb.Name, "body", string(body))
 		return types.ErrPushSeqPostData
 	}
-	chainlog.Debug("postData success", "cb.name", cb.Name, "SeqNum", data.Num)
-	return p.store.setSeqCBLastNum([]byte(cb.Name), data.Num)
+	chainlog.Debug("postData success", "cb.name", cb.Name, "updateSeq", seq)
+	return p.store.setSeqCBLastNum([]byte(cb.Name), seq)
 }
 
-func (p *pushseq) getDataBySeq(seq int64) (*types.BlockSeq, error) {
+func (p *pushseq) getBlockDataBySeq(seq int64) (*types.BlockSeq, int, error) {
 	seqdata, err := p.store.GetBlockSequence(seq)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	detail, err := p.store.LoadBlockBySequence(seq)
+	detail, blockSize, err := p.store.LoadBlockBySequence(seq)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return &types.BlockSeq{Num: seq, Seq: seqdata, Detail: detail}, nil
+	return &types.BlockSeq{Num: seq, Seq: seqdata, Detail: detail}, blockSize, nil
+}
+func (p *pushseq) getSeqs(cb *types.BlockSeqCB, seq int64, seqCount, maxSize int) ([]byte, int64, error) {
+	if cb.IsHeader {
+		return p.getHeaderSeqs(cb.Encode, seq, seqCount, maxSize)
+	}
+	return p.getBlockSeqs(cb.Encode, seq, seqCount, maxSize)
+}
+
+func (p *pushseq) getBlockSeqs(encode string, seq int64, seqCount, maxSize int) ([]byte, int64, error) {
+	seqs := &types.BlockSeqs{}
+	totalSize := 0
+	for i := 0; i < seqCount; i++ {
+		seq, size, err := p.getBlockDataBySeq(seq + int64(i))
+		if err != nil {
+			return nil, -1, err
+		}
+		if totalSize == 0 || totalSize+size < maxSize {
+			seqs.Seqs = append(seqs.Seqs, seq)
+			totalSize += size
+		} else {
+			break
+		}
+	}
+	updateSeq := seqs.Seqs[0].Num + int64(len(seqs.Seqs)) - 1
+
+	var postdata []byte
+	var err error
+	if encode == "json" {
+		postdata, err = types.PBToJSON(seqs)
+		if err != nil {
+			return nil, -1, err
+		}
+	} else {
+		postdata = types.Encode(seqs)
+	}
+	return postdata, updateSeq, nil
+}
+
+func (p *pushseq) getHeaderSeqs(encode string, seq int64, seqCount, maxSize int) ([]byte, int64, error) {
+	seqs := &types.HeaderSeqs{}
+	totalSize := 0
+	for i := 0; i < seqCount; i++ {
+		seq, size, err := p.getHeaderDataBySeq(seq + int64(i))
+		if err != nil {
+			return nil, -1, err
+		}
+		if totalSize == 0 || totalSize+size < maxSize {
+			seqs.Seqs = append(seqs.Seqs, seq)
+			totalSize += size
+		} else {
+			break
+		}
+	}
+	updateSeq := seqs.Seqs[0].Num + int64(len(seqs.Seqs)) - 1
+
+	var postdata []byte
+	var err error
+
+	if encode == "json" {
+		postdata, err = types.PBToJSON(seqs)
+		if err != nil {
+			return nil, -1, err
+		}
+	} else {
+		postdata = types.Encode(seqs)
+	}
+	return postdata, updateSeq, nil
+}
+
+func (p *pushseq) getHeaderDataBySeq(seq int64) (*types.HeaderSeq, int, error) {
+	seqdata, err := p.store.GetBlockSequence(seq)
+	if err != nil {
+		return nil, 0, err
+	}
+	header, err := p.store.GetBlockHeaderByHash(seqdata.Hash)
+	if err != nil {
+		return nil, 0, err
+	}
+	return &types.HeaderSeq{Num: seq, Seq: seqdata, Header: header}, header.Size(), nil
 }

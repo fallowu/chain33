@@ -56,6 +56,11 @@ if [ -n "${DAPP}" ]; then
 
 fi
 
+if [ -z "$DAPP" ]; then
+    # shellcheck source=/dev/null
+    source system-test-rpc.sh
+fi
+
 echo "=========== # env setting ============="
 echo "DAPP=$DAPP"
 echo "DAPP_TEST_FILE=$DAPP_TEST_FILE"
@@ -65,6 +70,8 @@ echo "CLI=$CLI"
 ####################
 
 testtoml=chain33.toml
+# to close solo miner config in un-miner node
+testtomlsolo=chain33-solo.toml
 
 function base_init() {
 
@@ -88,6 +95,7 @@ function base_init() {
     # wallet
     sed -i $sedfix 's/^minerdisable=.*/minerdisable=false/g' ${testtoml}
 
+    cp ${testtoml} ${testtomlsolo}
     #consens
     consens_init "solo"
 
@@ -98,6 +106,9 @@ function consens_init() {
     if [ "$1" == "solo" ]; then
         sed -i $sedfix 's/^name="ticket"/name="solo"/g' ${testtoml}
         sed -i $sedfix 's/^singleMode=false/singleMode=true/g' ${testtoml}
+
+        # only one node miner for solo miner
+        sed -i $sedfix 's/^minerstart=true/minerstart=false/g' ${testtomlsolo}
     fi
 
 }
@@ -287,6 +298,10 @@ function transfer() {
         hashes=("${hashes[@]}" "$hash")
     done
 
+    #send from 14KEKbYtKKQm4wMthSK9J4La4nAiidGozt for test
+    hash=$(${CLI} send coins transfer -a 10000 -n test -t 12qyocayNF7Lv6C9qW4avxs2E7U41fKSfv -k CC38546E9E659D15E6B4893F0AB32A06D103931A8230B0BDE71459D2B27D6944)
+    echo "${hash}"
+
     block_wait_by_height "$curHeight", 1
 
     echo "len: ${#hashes[@]}"
@@ -322,7 +337,6 @@ function transfer() {
                 echo "----------block info------------------"
                 lastheight=$(${CLI} block last_header | jq -r ".height")
                 ${CLI} block get -s 1 -e "${lastheight}" -d 1
-
                 exit 1
             fi
         else
@@ -331,6 +345,25 @@ function transfer() {
         fi
     done
 
+    echo "=========== # add more blocks ============="
+    # at least to height 3 for other test
+    test_add_block
+    test_add_block
+
+}
+
+function test_add_block() {
+    echo "=========== # add one block ============="
+    ${CLI} block last_header
+    local height=0
+    height=$(${CLI} block last_header | jq ".height")
+    echo "curheight=$height"
+
+    hash=$(${CLI} send coins transfer -a 1 -n test -t 1KSBd17H7ZK8iT37aJztFB22XGwsPTdwE4 -k CC38546E9E659D15E6B4893F0AB32A06D103931A8230B0BDE71459D2B27D6944)
+    echo "$hash"
+
+    block_wait_by_height "$height", 1
+    ${CLI} tx query_hash -s "${hash}"
 }
 
 function base_config() {
@@ -338,9 +371,17 @@ function base_config() {
     transfer
 }
 
+function base_test() {
+    if [ "$DAPP" == "" ]; then
+        system_test_rpc "https://${1}:8801"
+    fi
+    if [ "$DAPP" == "paracross" ]; then
+        system_test_rpc "https://${1}:8901"
+    fi
+}
 function dapp_run() {
     if [ -e "$DAPP_TEST_FILE" ]; then
-        ${DAPP} "${CLI}" "${1}"
+        ${DAPP} "${CLI}" "${1}" "${2}"
     fi
 
 }
@@ -358,7 +399,9 @@ function main() {
     dapp_run config
 
     ### test cases ###
-    dapp_run test
+    ip=$(${CLI} net info | jq -r ".externalAddr[0:10]")
+    base_test "${ip}"
+    dapp_run test "${ip}"
 
     ### finish ###
     check_docker_container

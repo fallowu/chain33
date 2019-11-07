@@ -81,13 +81,21 @@ func SendToAddress(rpcAddr string, from string, to string, amount int64, note st
 
 // CreateRawTx create rawtransaction func
 func CreateRawTx(cmd *cobra.Command, to string, amount float64, note string, isWithdraw bool, tokenSymbol, execName string) (string, error) {
+	title, _ := cmd.Flags().GetString("title")
+	cfg := types.GetCliSysParam(title)
+
 	if amount < 0 {
 		return "", types.ErrAmount
 	}
 	if float64(types.MaxCoin/types.Coin) < amount {
 		return "", types.ErrAmount
 	}
-
+	//检测to地址的合法性
+	if to != "" {
+		if err := address.CheckAddress(to); err != nil {
+			return "", types.ErrInvalidAddress
+		}
+	}
 	paraName, _ := cmd.Flags().GetString("paraName")
 	amountInt64 := int64(math.Trunc((amount+0.0000001)*1e4)) * 1e4
 	if execName != "" && !types.IsAllowExecName([]byte(execName), []byte(execName)) {
@@ -116,7 +124,7 @@ func CreateRawTx(cmd *cobra.Command, to string, amount float64, note string, isW
 	} else {
 		tx = &types.Transaction{Execer: execer, Payload: types.Encode(transfer), To: address.ExecAddress(string(execer))}
 	}
-	tx, err := types.FormatTx(string(execer), tx)
+	tx, err := types.FormatTx(cfg, string(execer), tx)
 	if err != nil {
 		return "", err
 	}
